@@ -1,0 +1,6 @@
+{
+    "python.analysis.extraPaths": [
+        "./karta hai"
+    ],
+    "python.analysis.diagnosticMode": "workspace"
+}

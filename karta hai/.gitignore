@@ -1,0 +1,6 @@
+__pycache__/
+artifacts/*
+!artifacts/bundle.joblib
+!artifacts/language_nn.keras
+logs/
+careerpath.db

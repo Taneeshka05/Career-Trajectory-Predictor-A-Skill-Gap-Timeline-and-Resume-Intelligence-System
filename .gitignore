@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+.pytest_cache/
+**/__pycache__/
+**/.pytest_cache/
+.streamlit/secrets.toml
+karta hai/data/
+karta hai/logs/
+karta hai/careerpath.db
+*.sqlite
+*.sqlite3
