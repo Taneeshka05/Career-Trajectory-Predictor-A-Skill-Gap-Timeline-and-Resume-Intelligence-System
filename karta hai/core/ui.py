@@ -1,7 +1,16 @@
+import hashlib
+import sys
+from pathlib import Path
 import streamlit as st
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from core import config as cfg
 from core import database as db
 from core.engine import CareerEngine
+from core.parser import extract_resume_metadata, is_valid_resume, parse_document
 
 CSS = """
 <style>
@@ -32,12 +41,27 @@ CSS = """
                                   backdrop-filter: blur(24px) saturate(145%);
                                   -webkit-backdrop-filter: blur(24px) saturate(145%);
                                   box-shadow: inset -1px 0 rgba(255,255,255,.035), 12px 0 42px rgba(2,6,23,.12);}
-.stApp [data-testid="stSidebar"] > div:first-child {background: rgba(15, 20, 36, .32);
+.stApp [data-testid="stSidebar"] > div:first-child {padding-top: .75rem;
+                                                    background: rgba(15, 20, 36, .32);
                                                     backdrop-filter: blur(24px) saturate(145%);
                                                     -webkit-backdrop-filter: blur(24px) saturate(145%);}
 .stApp [data-testid="stSidebarContent"] {display: flex; flex-direction: column;}
 .stApp [data-testid="stSidebarUserContent"] {order: 1;}
-.stApp [data-testid="stSidebarNav"] {order: 2; margin-top: 1rem;}
+.stApp [data-testid="stSidebarNav"] {order: 2; margin-top: .75rem; padding: 0 .15rem;}
+.stApp [data-testid="stSidebarNav"] ul > li:first-child {display: none;}
+.stApp [data-testid="stSidebarNavLink"] {margin: .15rem 0; padding: .55rem .7rem;
+                                         border-radius: 11px; color: #cbd5e1;
+                                         transition: background .18s ease, color .18s ease;}
+.stApp [data-testid="stSidebarNavLink"]:hover {background: rgba(129,140,248,.14); color: #fff;}
+.stApp [data-testid="stSidebarNavLink"][aria-current="page"] {
+    background: rgba(129,140,248,.22); color: #fff; font-weight: 650;
+    box-shadow: inset 0 0 0 1px rgba(165,180,252,.16);
+}
+.sidebar-home-link {display: block; margin: .55rem .1rem 0; padding: .55rem .7rem;
+                    border: 1px solid rgba(148,163,184,.18); border-radius: 11px;
+                    color: #e0e7ff !important; background: rgba(129,140,248,.12);
+                    text-decoration: none !important; font-weight: 600;}
+.sidebar-home-link:hover {background: rgba(129,140,248,.22);}
 .brand-lockup {display: flex; align-items: center; gap: .75rem; margin: .25rem 0 .6rem;
                padding: .8rem .75rem; border: 1px solid rgba(255,255,255,.12);
                border-radius: 16px; background: linear-gradient(135deg, rgba(129,140,248,.17),
@@ -94,6 +118,9 @@ CSS = """
 .card:hover {transform: translateY(-4px) perspective(800px) rotateX(1deg);
              box-shadow: 0 20px 44px rgba(2, 6, 23, .28);}
 .card b {color: #111827;}
+.card-dark {background: linear-gradient(145deg, rgba(30,41,59,.78), rgba(15,23,42,.85));
+            color: #f1f5f9; border: 1px solid rgba(148,163,184,.22); border-radius: 18px;
+            padding: 1.2rem; box-shadow: 0 12px 32px rgba(2,6,23,.22);}
 .stApp h1, .stApp h2, .stApp h3 {letter-spacing: -.025em;}
 .stApp h2 {margin-top: 1.8rem;}
 .stApp [data-testid="stMetric"] {height: 100%; padding: 1rem 1.1rem;
@@ -122,14 +149,15 @@ CSS = """
     background: linear-gradient(110deg, #4f46e5, #7c3aed 60%, #9333ea);
     box-shadow: 0 8px 22px rgba(99,102,241,.28);
 }
-.chip {display: inline-block; padding: 3px 12px; margin: 3px; border-radius: 999px; font-size: .85rem;}
-.chip-ok {background: #dcfce7; color: #166534;}
-.chip-miss {background: #fee2e2; color: #991b1b;}
-.chip-info {background: #e0e7ff; color: #3730a3;}
-.hl-weak {background: #fecaca; padding: 0 3px; border-radius: 4px;}
-.hl-strong {background: #bbf7d0; padding: 0 3px; border-radius: 4px;}
-.resume-box {background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 1rem;
-             line-height: 1.7;}
+.chip {display: inline-block; padding: 4px 12px; margin: 3px; border-radius: 999px; font-size: .84rem; font-weight: 500;}
+.chip-ok {background: #dcfce7; color: #166534; border: 1px solid #bbf7d0;}
+.chip-miss {background: #fee2e2; color: #991b1b; border: 1px solid #fecaca;}
+.chip-info {background: #e0e7ff; color: #3730a3; border: 1px solid #c7d2fe;}
+.chip-transfer {background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd;}
+.hl-weak {background: #fecaca; color: #7f1d1d; padding: 1px 4px; border-radius: 4px; font-weight: 500;}
+.hl-strong {background: #bbf7d0; color: #14532d; padding: 1px 4px; border-radius: 4px; font-weight: 500;}
+.resume-box {background: #ffffff; color: #1e293b; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.2rem;
+             line-height: 1.75; font-size: 0.95rem; box-shadow: 0 4px 16px rgba(0,0,0,0.06);}
 @media (max-width: 768px) {
     .block-container {padding-left: 1rem !important; padding-right: 1rem !important;}
     .hero {padding: 1.4rem; border-radius: 18px;}
@@ -167,6 +195,7 @@ def setup(title, icon):
         </div>
         """, unsafe_allow_html=True)
         st.caption("Resume job matching, skill gap timeline and career trajectory prediction.")
+        st.markdown("<a class='sidebar-home-link' href='./'>Home</a>", unsafe_allow_html=True)
         if db.history_enabled():
             name = st.text_input("Profile name", value=st.session_state.get("profile_name", "guest"),
                                  key=f"profile_input_{title}")
@@ -188,34 +217,75 @@ def chips(items, kind="info"):
 
 
 def read_upload(file):
-    if file.name.lower().endswith(".pdf"):
-        try:
-            from pypdf import PdfReader
-            return "\n".join((page.extract_text() or "") for page in PdfReader(file).pages)
-        except Exception:
-            st.warning("Could not read this PDF. Paste the text instead.")
-            return ""
-    return file.read().decode("utf-8", errors="ignore")
+    return parse_document(file, file.name)
 
 
-def resume_panel(key, height=260, default_text=cfg.DEMO_RESUME):
+@st.dialog("Invalid resume file")
+def _invalid_resume_dialog(message):
+    st.error(message)
+    if st.button("Close", key="close_invalid_resume_dialog"):
+        st.session_state.pop("_invalid_resume_dialog", None)
+        st.rerun()
+
+
+def show_invalid_resume_dialog(message):
+    _invalid_resume_dialog(message)
+
+
+def valid_resume_or_dialog(text):
+    if is_valid_resume(text):
+        return True
+    for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
+        st.session_state.pop(result_key, None)
+    show_invalid_resume_dialog(
+        "The supplied document does not appear to be a valid resume. "
+        "Please upload or enter a resume containing work or education history and relevant skills."
+    )
+    return False
+
+
+def resume_panel(key, height=260, default_text=""):
     if key not in st.session_state:
-        st.session_state[key] = st.session_state.get("resume_store", default_text)
-    upload = st.file_uploader("Upload resume (.txt or .pdf) or paste below", type=["txt", "pdf"],
+        saved_text = st.session_state.get("resume_store", default_text)
+        st.session_state[key] = "" if saved_text == cfg.DEMO_RESUME else saved_text
+    upload = st.file_uploader("Upload resume (.txt, .pdf, or .docx) or paste below",
+                              type=["txt", "pdf", "docx"],
                               key=f"{key}_upload")
-    marker = (key, upload.name, upload.size) if upload is not None else None
-    if marker and st.session_state.get("_last_upload") != marker:
+    marker = None
+    if upload is not None:
+        marker = (key, upload.name, hashlib.sha256(upload.getvalue()).hexdigest())
+    marker_key = f"_last_upload_{key}"
+    if marker and st.session_state.get(marker_key) != marker:
         text = read_upload(upload)
-        if text:
+        for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
+            st.session_state.pop(result_key, None)
+        if is_valid_resume(text):
             st.session_state[key] = text
-        st.session_state["_last_upload"] = marker
+            st.session_state.pop("_invalid_resume_dialog", None)
+        else:
+            st.session_state[key] = ""
+            st.session_state["_invalid_resume_dialog"] = (
+                f"'{upload.name}' does not appear to be a readable resume. "
+                "Upload a resume containing work or education history and relevant skills."
+            )
+        st.session_state[marker_key] = marker
+    elif upload is None:
+        st.session_state.pop(marker_key, None)
+        if st.session_state.get(key) == cfg.DEMO_RESUME:
+            st.session_state[key] = ""
     text = st.text_area("Resume text", key=key, height=height)
     st.session_state["resume_store"] = text
+    if not text or not is_valid_resume(text):
+        for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
+            st.session_state.pop(result_key, None)
+        st.session_state.pop("home_result_is_demo", None)
+    if st.session_state.get("_invalid_resume_dialog"):
+        show_invalid_resume_dialog(st.session_state["_invalid_resume_dialog"])
     return text
 
 
-def years_slider(key):
-    value = st.slider("Years of experience", 0, 15, st.session_state.get("years_store", cfg.DEMO_YEARS),
-                      key=key)
-    st.session_state["years_store"] = value
-    return value
+def resume_years(text):
+    years = extract_resume_metadata(text)["extracted_years"]
+    unit = "year" if years == 1 else "years"
+    st.caption(f"Experience extracted from resume: **{years} {unit}**")
+    return years

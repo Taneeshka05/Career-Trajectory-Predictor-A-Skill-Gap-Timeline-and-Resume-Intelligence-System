@@ -2,7 +2,6 @@ import time
 import joblib
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score, learning_curve
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -24,6 +23,19 @@ from core.preprocess import prepare_text, fit_tfidf, build_pairs
 from core.logger_setup import get_logger
 
 log = get_logger("models")
+
+
+def _get_tf():
+    """Lazily import TensorFlow so test collection never fails when TF is missing."""
+    try:
+        import tensorflow as tf  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "TensorFlow is required for the neural-network training path. "
+            "Install it with `pip install -r requirements.txt` or the compatible "
+            "tensorflow package for your Python version."
+        ) from exc
+    return tf
 
 BUNDLE_PATH = cfg.ARTIFACT_DIR / "bundle.joblib"
 NN_PATH = cfg.ARTIFACT_DIR / "language_nn.keras"
@@ -117,6 +129,7 @@ def run_pca_kmeans(resumes, X_skill):
 
 
 def train_language_nn(resumes):
+    tf = _get_tf()
     train_idx, test_idx = train_test_split(np.arange(len(resumes)), test_size=0.2,
                                            random_state=cfg.SEED,
                                            stratify=resumes["language_label"])
@@ -203,6 +216,7 @@ def reliability_report(pairs, train_df, test_df, clf):
 
 
 def train_all(resume_csv=None, only_real=False):
+    tf = _get_tf()
     start = time.time()
     rng = np.random.default_rng(cfg.SEED)
     tf.random.set_seed(cfg.SEED)
@@ -252,6 +266,7 @@ def train_all(resume_csv=None, only_real=False):
 
 
 def load_artifacts():
+    tf = _get_tf()
     bundle = joblib.load(BUNDLE_PATH)
     nn = tf.keras.models.load_model(NN_PATH)
     return bundle, nn

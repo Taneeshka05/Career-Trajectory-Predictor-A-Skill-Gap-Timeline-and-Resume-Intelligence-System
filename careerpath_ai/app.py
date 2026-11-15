@@ -1,8 +1,7 @@
 import streamlit as st
-
 from core import config as cfg
 from core import database as db
-from core.ui import profile, resume_panel, setup
+from core.ui import profile, resume_panel, resume_years, setup, chips, valid_resume_or_dialog
 
 
 def home():
@@ -10,56 +9,55 @@ def home():
 
     st.markdown("""
     <div class='hero'>
-    <div class='hero-kicker'>Your next opportunity starts here</div>
-    <h1>CareerPath AI</h1>
-    <p>Turn your resume into a clear career plan. Explore your fit for real roles, find the skills
-    you are missing, and see the next steps toward your target career.</p>
-    <a class='hero-cta' href='#workspace'>Explore the career workspace <span aria-hidden='true'>↓</span></a>
+      <div class='hero-kicker'>Career Intelligence & Trajectory Platform</div>
+      <h1>Career Trajectory Predictor & Skill Gap Timeline Analyzer</h1>
+      <p>Transform your resume into a data-driven career roadmap. Evaluate multi-dimensional job compatibility,
+      discover cross-domain transferable skill bridges, forecast week-by-week readiness timelines, and benchmark machine learning models.</p>
+      <a class='hero-cta' href='#workspace'>Launch Career Analysis Workspace <span aria-hidden='true'>&darr;</span></a>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class='intro-grid'>
-      <div class='intro-tile'><strong>Understand your fit</strong>
-        <span>Compare your resume with a role and see a clear match and readiness summary.</span></div>
-      <div class='intro-tile'><strong>Find your next skills</strong>
-        <span>See which requirements you already meet and what to focus on learning next.</span></div>
-      <div class='intro-tile'><strong>Build a practical plan</strong>
-        <span>Explore career paths, learning timelines, and detailed feedback in one workspace.</span></div>
+      <div class='intro-tile'>
+        <strong>Intelligent Job Fit & Matching</strong>
+        <span>Multi-dimensional scoring combining direct technical skills, semantic TF-IDF text similarity, and transferable competency bridges.</span>
+      </div>
+      <div class='intro-tile'>
+        <strong>Skill Gap & Taxonomy Roadmap</strong>
+        <span>Hierarchical taxonomy analysis with prerequisite-aware DAG scheduling, weekly milestone planning, and ROI prioritization.</span>
+      </div>
+      <div class='intro-tile'>
+        <strong>Real Machine Learning Lab</strong>
+        <span>Leakage-free ML training and validation engine supporting custom CSV/Excel uploads, EDA, model comparisons, and live prediction inference.</span>
+      </div>
     </div>
     <div id='workspace' class='workspace-heading'></div>
     """, unsafe_allow_html=True)
 
-    st.subheader("Start with a resume")
-    st.caption("Try the sample resume below, or replace it with your own text or PDF.")
-    st.info("A sample resume is preloaded for demonstration. Its analysis is an example, not your personal profile.")
-    resume_text = resume_panel("home_resume", height=220, default_text=cfg.DEMO_RESUME)
+    st.subheader("Start with a Resume")
+    st.caption("Upload your resume (.txt, .pdf, or .docx) or paste valid resume text to compute personalized trajectory metrics.")
+
+    resume_text = resume_panel("home_resume", height=220)
 
     first, second = st.columns(2)
     with first:
-        domain = st.selectbox("Career area", cfg.DOMAIN_NAMES, key="home_domain")
-        years = st.slider("Years of experience", 0, 15, cfg.DEMO_YEARS, key="home_years")
+        domain = st.selectbox("Target Career Domain", cfg.DOMAIN_NAMES, key="home_domain")
+        years = resume_years(resume_text)
     with second:
         job_ids = [i for i, item_domain in enumerate(engine.job_domains) if item_domain == domain]
         job_id = st.selectbox(
-            "Target role",
+            "Target Position",
             job_ids,
             key="home_job",
             format_func=lambda job: engine.job_titles[job],
         )
 
-    if "home_result" not in st.session_state and resume_text == cfg.DEMO_RESUME:
-        st.session_state["home_result"] = engine.analyze(resume_text, years, job_id)
-        st.session_state["home_result_is_demo"] = True
-
-    if st.button("Analyze my resume", type="primary", width="stretch"):
-        if len(resume_text.split()) < 5:
-            st.error("Please enter at least five words of resume text before analyzing.")
-        else:
-            with st.spinner("Matching your resume to the selected role..."):
+    if st.button("Compute Career Compatibility & Timeline", type="primary", width="stretch"):
+        if valid_resume_or_dialog(resume_text):
+            with st.spinner("Evaluating career compatibility, skill taxonomy, and regression models..."):
                 result = engine.analyze(resume_text, years, job_id)
             st.session_state["home_result"] = result
-            st.session_state["home_result_is_demo"] = resume_text == cfg.DEMO_RESUME
             st.session_state["analysis"] = result
             st.session_state.pop("home_saved_analysis_id", None)
 
@@ -71,37 +69,38 @@ def home():
             and result["job_id"] == job_id
         )
         if not inputs_match:
-            st.info("Your inputs changed. Analyze again to refresh these results.")
+            st.info("Inputs have changed. Click 'Compute Career Compatibility' to refresh output.")
         else:
             st.divider()
-            is_demo = st.session_state.get("home_result_is_demo", False)
-            st.subheader(
-                f"Sample results for {result['job_title']}" if is_demo
-                else f"Your results for {result['job_title']}"
-            )
-            if is_demo:
-                st.caption("Example output from the built-in sample resume. Replace the sample to see your own results.")
+            st.subheader(f"Career Fit & Trajectory for {result['job_title']}")
+
             metrics = st.columns(4)
-            metrics[0].metric("Job match", f"{result['match_pct']:.1f}%")
-            metrics[1].metric("Skill match", f"{result['skill_match_pct']:.1f}%")
-            metrics[2].metric("Resume strength", f"{result['strength']:.0f}/100")
-            metrics[3].metric("Estimated weeks to ready", f"{result['weeks']:.1f}")
+            compat = result.get("composite_compat", result["match_pct"])
+            metrics[0].metric("Overall Compatibility", f"{compat:.1f} / 100")
+            metrics[1].metric("Direct Skill Match", f"{result['skill_match_pct']:.1f}%")
+            metrics[2].metric("Resume Strength", f"{result['strength']:.0f} / 100")
+            metrics[3].metric("Est. Weeks to Ready", f"{result['weeks']:.1f} wks")
 
             st.progress(
-                min(max(result["skill_match_pct"] / 100, 0.0), 1.0),
-                text=f"{result['level']} readiness · {len(result['matched'])} of "
-                f"{len(result['job_skills'])} required skills matched",
+                min(max(result["skill_match_pct"] / 100.0, 0.0), 1.0),
+                text=f"{result['level']} Readiness &bull; {len(result['matched'])} of "
+                f"{len(result['job_skills'])} Core Requirements Met",
             )
 
             matched, missing = st.columns(2)
             with matched:
-                st.markdown("**Skills found in your resume**")
-                st.markdown(", ".join(result["matched"]) or "No required skills detected yet.")
+                st.markdown("**Core Skills Found in Resume**")
+                st.markdown(chips(result["matched"], "ok"), unsafe_allow_html=True)
             with missing:
-                st.markdown("**Skills to focus on next**")
-                st.markdown(", ".join(result["missing"]) or "No required skills are missing.")
+                st.markdown("**Target Gaps to Acquire**")
+                st.markdown(chips(result["missing"], "miss"), unsafe_allow_html=True)
 
-            if not is_demo and db.history_enabled():
+            if result.get("transferable"):
+                st.markdown("**Transferable Skill Bridges Detected**")
+                trans_badges = [f"{t['source_skill']} &rarr; {t['target_skill']} ({t['percentage']}%)" for t in result["transferable"][:3]]
+                st.markdown(chips(trans_badges, "transfer"), unsafe_allow_html=True)
+
+            if db.history_enabled():
                 if st.button("Save this result to History", key="save_home_result"):
                     analysis_id = db.save_analysis(
                         profile(), result, engine.plan_for_save(result)
@@ -109,23 +108,23 @@ def home():
                     st.session_state["home_saved_analysis_id"] = analysis_id
                 saved_id = st.session_state.get("home_saved_analysis_id")
                 if saved_id:
-                    st.success(f"Saved result #{saved_id}. You can review it on the History page.")
-            elif not is_demo:
-                st.caption("History saving is disabled in public demo mode.")
+                    st.success(f"Saved result #{saved_id}. Review your learning progress on the History page.")
+            else:
+                st.caption("History storage disabled in public demo mode.")
 
             st.page_link(
                 "pages/1_Analyze_Resume.py",
-                label="Open the detailed analysis",
+                label="Explore Detailed Multi-Tab Analysis (Roadmap, Trajectory & Explainability)",
                 icon=":material/analytics:",
             )
 
-    with st.expander("How to read these results"):
+    with st.expander("Understanding Analytical Scores & Academic Methodology"):
         st.markdown(
-            "- **Job match** compares the wording of your resume with the selected job description.\n"
-            "- **Skill match** measures how many of that job's listed skills appear in your resume.\n"
-            "- **Weeks to ready** is a model estimate based on your skill gap and experience.\n\n"
-            "The training data is synthetic, so use these results as guidance—not as a hiring decision "
-            "or a guarantee of how long learning will take."
+            "- **Overall Compatibility**: Multi-dimensional composite score reflecting direct skill overlap (40%), transferable skill credit (15%), TF-IDF semantic match (20%), soft skills (15%), and experience alignment (10%).\n"
+            "- **Direct Skill Match**: Percentage of mandatory job skills explicitly detected in the candidate's text.\n"
+            "- **Weeks to Ready**: Supervised regression prediction (Linear/Ridge) estimating total learning duration scaled to weekly study availability.\n"
+            "- **Readiness Level**: Supervised classification prediction (Junior / Mid / Senior) based on normalized feature vectors.\n\n"
+            "Predictions are analytical estimations produced by models trained on structured datasets. They provide strategic guidance rather than a hiring guarantee."
         )
 
 

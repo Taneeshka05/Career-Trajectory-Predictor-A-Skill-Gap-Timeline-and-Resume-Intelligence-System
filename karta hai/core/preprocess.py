@@ -3,31 +3,74 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from core import config as cfg
+from core.taxonomy import SKILL_ALIASES, SOFT_SKILLS
 
 SKILL_PATTERNS = {s: re.compile(r"\b" + re.escape(s) + r"\b") for s in cfg.ALL_SKILLS}
+ALIAS_PATTERNS = {a: (re.compile(r"\b" + re.escape(a) + r"\b"), target)
+                  for a, target in SKILL_ALIASES.items() if target in cfg.ALL_SKILLS}
+SOFT_PATTERNS = {s: re.compile(r"\b" + re.escape(s) + r"\b") for s in SOFT_SKILLS}
 
 
-def clean_text(text):
+def clean_text(text: str) -> str:
+    """Preprocesses raw text by lower-casing, removing punctuation, and filtering stop words."""
     text = text.lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     words = [w for w in text.split() if w not in ENGLISH_STOP_WORDS]
     return " ".join(words)
 
 
-def extract_skills(clean):
-    return [s for s, p in SKILL_PATTERNS.items() if p.search(clean)]
+def extract_skills(clean: str) -> list:
+    """
+    Extracts canonical skills from cleaned text using direct pattern matching
+    and alias resolution. Returns list of unique canonical skills.
+    """
+    found = set()
+    # 1. Direct canonical skills
+    for s, p in SKILL_PATTERNS.items():
+        if p.search(clean):
+            found.add(s)
+            
+    # 2. Aliases and synonym mappings
+    for alias, (p, target) in ALIAS_PATTERNS.items():
+        if p.search(clean):
+            found.add(target)
+            
+    return sorted(found)
 
 
-def count_skill_mentions(clean):
+def extract_soft_skills(clean: str) -> list:
+    """Extracts soft skills and professional competencies from cleaned text."""
+    found = set()
+    for s, p in SOFT_PATTERNS.items():
+        if p.search(clean):
+            found.add(s)
+    return sorted(found)
+
+
+def count_skill_mentions(clean: str) -> dict:
+    """
+    Counts total mentions for each matched skill, combining canonical
+    and alias occurrences.
+    """
     counts = {}
     for s, p in SKILL_PATTERNS.items():
         n = len(p.findall(clean))
         if n > 0:
-            counts[s] = n
+            counts[s] = counts.get(s, 0) + n
+            
+    for alias, (p, target) in ALIAS_PATTERNS.items():
+        n = len(p.findall(clean))
+        if n > 0:
+            counts[target] = counts.get(target, 0) + n
+            
     return counts
 
 
 def skill_features(resume_skills, job_skills, years):
+    """
+    Calculates numerical features for regression and classification models.
+    Preserves exact keys expected by cfg.REG_FEATURES and cfg.CLF_FEATURES.
+    """
     rs = set(resume_skills)
     js = set(job_skills)
     matched = rs & js

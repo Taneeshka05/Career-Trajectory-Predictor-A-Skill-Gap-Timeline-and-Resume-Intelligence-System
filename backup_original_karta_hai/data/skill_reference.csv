@@ -1,0 +1,54 @@
+skill,difficulty,learning_weeks
+ansible,3,7
+api testing,3,7
+automation testing,4,9
+aws,4,9
+bash,2,5
+bootstrap,1,3
+css,1,3
+data cleaning,2,5
+data visualization,2,5
+deep learning,5,11
+docker,3,7
+excel,1,3
+feature engineering,4,9
+git,1,3
+hibernate,4,9
+html,1,3
+hypothesis testing,3,7
+java,4,9
+javascript,3,7
+jenkins,3,7
+jira,1,3
+junit,2,5
+kubernetes,5,11
+linux,2,5
+machine learning,4,9
+manual testing,1,3
+maven,2,5
+microservices,5,11
+mlops,5,11
+model deployment,4,9
+mongodb,2,5
+monitoring,3,7
+mysql,2,5
+nodejs,3,7
+numpy,2,5
+pandas,2,5
+postman,1,3
+power bi,2,5
+python,3,7
+pytorch,4,9
+react,3,7
+reporting,1,3
+rest api,3,7
+scikit learn,3,7
+selenium,3,7
+spring boot,4,9
+sql,2,5
+statistics,3,7
+tableau,2,5
+tensorflow,4,9
+terraform,4,9
+test cases,1,3
+typescript,3,7

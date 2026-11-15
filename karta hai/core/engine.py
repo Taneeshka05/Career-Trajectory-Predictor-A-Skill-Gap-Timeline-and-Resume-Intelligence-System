@@ -6,8 +6,12 @@ import pandas as pd
 from core import config as cfg
 from core import nlp_feedback as nlp
 from core.models import artifacts_exist, train_all, load_artifacts
-from core.preprocess import clean_text, extract_skills, count_skill_mentions, skill_features
+from core.preprocess import (clean_text, extract_skills, extract_soft_skills,
+                             count_skill_mentions, skill_features)
 from core.prerequisites import learning_order
+from core.taxonomy import (find_transferable_credits, get_skill_category,
+                           categorize_skills, SKILL_TAXONOMY, SOFT_SKILLS)
+from core.parser import extract_resume_metadata, is_valid_resume
 from core.logger_setup import get_logger
 
 log = get_logger("engine")
@@ -42,8 +46,16 @@ class CareerEngine:
         return str(level), max(0.0, weeks)
 
     def language_score(self, text):
+        self._require_valid_resume(text)
         x = self.b["nn_vec"].transform([clean_text(text)]).toarray().astype("float32")
         return float(self.nn(x, training=False).numpy()[0][0])
+
+    @staticmethod
+    def _require_valid_resume(text):
+        if not is_valid_resume(text):
+            raise ValueError(
+                "Input rejected: the document does not contain enough structured resume content."
+            )
 
     def domain_coverage(self, cand_skills):
         return {d: len(set(cand_skills) & set(s)) / len(s) for d, s in cfg.DOMAIN_SKILLS.items()}
@@ -51,7 +63,8 @@ class CareerEngine:
     def candidate_vector(self, cand_skills):
         vec = np.zeros(len(cfg.ALL_SKILLS))
         for s in cand_skills:
-            vec[cfg.ALL_SKILLS.index(s)] = 1
+            if s in cfg.ALL_SKILLS:
+                vec[cfg.ALL_SKILLS.index(s)] = 1
         return vec
 
     def candidate_point(self, cand_skills):
@@ -62,7 +75,7 @@ class CareerEngine:
         vec = self.candidate_vector(cand_skills)
         cents = self.b["pca"]["centroids"]
         sims = cents @ vec / (np.linalg.norm(cents, axis=1) * (np.linalg.norm(vec) + 1e-9) + 1e-9)
-        top = np.argsort(sims)[::-1][:3]
+        top = np.argsort(sims)[::-1][:4]
         cand_vec = self.tfidf.transform([clean])
         job_sims = (self.J @ cand_vec.T).toarray().ravel()
         rows = []
@@ -73,29 +86,59 @@ class CareerEngine:
             feats = skill_features(cand_skills, self.job_skills[best], years)
             feats["match_score"] = float(job_sims[best])
             level, weeks = self.predict(feats)
-            rows.append({"domain": d, "fit": float(sims[t]) * 100, "job": self.job_titles[best],
-                         "job_id": best, "level": level, "weeks": weeks})
+            
+            domain_skills = set(cfg.DOMAIN_SKILLS[d])
+            overlap = sorted(set(cand_skills) & domain_skills)
+            missing = sorted(domain_skills - set(cand_skills))
+            transferable = find_transferable_credits(set(cand_skills), set(missing))
+            
+            rationale = (
+                f"You hold {len(overlap)} of {len(domain_skills)} core {d} skills. "
+                f"{len(transferable)} additional skills have high cross-domain transferability."
+            )
+            rows.append({
+                "domain": d,
+                "fit": float(sims[t]) * 100,
+                "job": self.job_titles[best],
+                "job_id": best,
+                "level": level,
+                "weeks": weeks,
+                "overlap": overlap,
+                "missing": missing,
+                "transferable": transferable,
+                "rationale": rationale
+            })
         return rows
 
     def skill_levels(self, clean):
         rows = []
-        for s, n in count_skill_mentions(clean).items():
+        mentions = count_skill_mentions(clean)
+        for s, n in mentions.items():
             level = "Beginner" if n == 1 else ("Intermediate" if n == 2 else "Advanced")
-            rows.append({"skill": s, "mentions": n, "level": level, "difficulty": cfg.DIFFICULTY[s]})
-        return pd.DataFrame(rows, columns=["skill", "mentions", "level", "difficulty"])
+            diff = cfg.DIFFICULTY.get(s, 2)
+            cat = get_skill_category(s)
+            rows.append({
+                "skill": s,
+                "category": cat,
+                "mentions": n,
+                "level": level,
+                "difficulty": diff,
+                "evidence_type": "Resume Text Keyword Mentions"
+            })
+        return pd.DataFrame(rows, columns=["skill", "category", "mentions", "level", "difficulty", "evidence_type"])
 
     def match_for(self, clean, job_id):
         return float(self.tfidf.transform([clean]).multiply(self.J[job_id]).sum())
 
     def weeks_per_base_unit(self, missing, ml_weeks, hours):
-        base = sum(cfg.SKILL_WEEKS[m] for m in missing)
+        base = sum(cfg.SKILL_WEEKS.get(m, 5) for m in missing)
         if base == 0:
             return 0.0
         return max(ml_weeks, 1.0) / base * cfg.HOURS_BASELINE / max(hours, 1)
 
     def learning_weeks(self, order, result, hours):
         unit = self.weeks_per_base_unit(result["missing"], result["weeks"], hours)
-        return sum(cfg.SKILL_WEEKS[s] for s in order) * unit
+        return sum(cfg.SKILL_WEEKS.get(s, 5) for s in order) * unit
 
     def timeline(self, missing, owned, ml_weeks, hours):
         cols = ["skill", "type", "difficulty", "start", "weeks", "end"]
@@ -105,9 +148,15 @@ class CareerEngine:
         start = 0.0
         rows = []
         for s in learning_order(missing, owned):
-            w = cfg.SKILL_WEEKS[s] * unit
-            rows.append({"skill": s, "type": "target skill" if s in missing else "foundation",
-                         "difficulty": cfg.DIFFICULTY[s], "start": start, "weeks": w, "end": start + w})
+            w = cfg.SKILL_WEEKS.get(s, 5) * unit
+            rows.append({
+                "skill": s,
+                "type": "target skill" if s in missing else "foundation",
+                "difficulty": cfg.DIFFICULTY.get(s, 2),
+                "start": start,
+                "weeks": w,
+                "end": start + w
+            })
             start += w
         return pd.DataFrame(rows, columns=cols)
 
@@ -118,10 +167,11 @@ class CareerEngine:
 
     @staticmethod
     def parse_years(text):
-        m = re.search(r"(\d{1,2})\+?\s*(?:years|yrs)", text.lower())
-        return min(int(m.group(1)), 20) if m else 0
+        return extract_resume_metadata(text)["extracted_years"]
 
     def screen(self, resume_text, years, job_id):
+        self._require_valid_resume(resume_text)
+        years = extract_resume_metadata(resume_text)["extracted_years"]
         clean = clean_text(resume_text)
         cand = extract_skills(clean)
         match = self.match_for(clean, job_id)
@@ -130,41 +180,123 @@ class CareerEngine:
         level, weeks = self.predict(feats)
         fit = 0.6 * feats["skill_match_ratio"] + 0.4 * min(match / 0.25, 1.0)
         missing = sorted(set(self.job_skills[job_id]) - set(cand))
-        return {"fit_score": round(fit * 100, 1), "skill_match_pct": round(feats["skill_match_ratio"] * 100, 1),
-                "text_match_pct": round(match * 100, 1), "level": level, "weeks_to_ready": round(weeks, 1),
-                "years": years, "matched": sorted(set(self.job_skills[job_id]) & set(cand)),
-                "missing": missing}
+        matched = sorted(set(self.job_skills[job_id]) & set(cand))
+        transferable = find_transferable_credits(set(cand), set(missing))
+        return {
+            "fit_score": round(fit * 100, 1),
+            "skill_match_pct": round(feats["skill_match_ratio"] * 100, 1),
+            "text_match_pct": round(match * 100, 1),
+            "level": level,
+            "weeks_to_ready": round(weeks, 1),
+            "years": years,
+            "matched": matched,
+            "missing": missing,
+            "transferable": transferable,
+        }
 
     def analyze(self, resume_text, years, job_id):
+        self._require_valid_resume(resume_text)
+        metadata = extract_resume_metadata(resume_text)
+        years = metadata["extracted_years"]
         t0 = time.time()
         clean = clean_text(resume_text)
         cand_skills = extract_skills(clean)
+        cand_soft = extract_soft_skills(clean)
         job_skills = self.job_skills[job_id]
+        
+        job_clean = self.jobs.loc[self.jobs["job_id"] == job_id, "clean"].iloc[0]
+        job_soft = extract_soft_skills(job_clean)
+        
         match = self.match_for(clean, job_id)
         feats = skill_features(cand_skills, job_skills, years)
         feats["match_score"] = match
         level, weeks = self.predict(feats)
-        missing = sorted(set(job_skills) - set(cand_skills), key=lambda s: (-cfg.DIFFICULTY[s], s))
+        
+        missing = sorted(set(job_skills) - set(cand_skills), key=lambda s: (-cfg.DIFFICULTY.get(s, 2), s))
         matched = sorted(set(job_skills) & set(cand_skills))
+        
+        # Transferable skills analysis
+        transferable = find_transferable_credits(set(cand_skills), set(missing))
+        transferable_gain = sum(c["credit"] for c in transferable) / max(len(job_skills), 1)
+        transferable_match_pct = min(100.0, (feats["skill_match_ratio"] + transferable_gain) * 100)
+        
+        # Soft skills alignment
+        soft_overlap = sorted(set(cand_soft) & set(job_soft)) if job_soft else sorted(cand_soft)
+        soft_match_pct = (len(soft_overlap) / max(len(job_soft), 1) * 100) if job_soft else (80.0 if cand_soft else 50.0)
+        
+        # Experience alignment
+        req_exp = 1 if "junior" in self.job_titles[job_id].lower() else (3 if "mid" in self.job_titles[job_id].lower() else 6)
+        exp_fit_ratio = min(years / max(req_exp, 1), 1.2)
+        
+        # Composite Explainable Compatibility Score (0 - 100)
+        norm_text = min(match / 0.25, 1.0)
+        composite_compat = (
+            0.40 * feats["skill_match_ratio"] +
+            0.15 * min(transferable_gain, 0.35) +
+            0.20 * norm_text +
+            0.15 * (soft_match_pct / 100.0) +
+            0.10 * min(exp_fit_ratio, 1.0)
+        ) * 100.0
+        composite_compat = round(float(np.clip(composite_compat, 5.0, 99.0)), 1)
+        
+        # Detailed gap explanations
+        gap_explanations = []
+        for s in missing:
+            diff = cfg.DIFFICULTY.get(s, 2)
+            cat = get_skill_category(s)
+            base_w = cfg.SKILL_WEEKS.get(s, 5)
+            gap_explanations.append({
+                "skill": s,
+                "category": cat,
+                "difficulty": diff,
+                "base_weeks": base_w,
+                "hours": base_w * 10,
+                "priority": "Core Requirement" if s in job_skills[:5] else "Secondary Requirement",
+                "explanation": f"Important {cat} capability for {self.job_titles[job_id]} tasks and architecture."
+            })
+            
         lang_prob = self.language_score(resume_text)
         analysis = nlp.analyze_text(resume_text, job_skills, cand_skills)
         result = {
-            "job_id": job_id, "job_title": self.job_titles[job_id], "domain": self.job_domains[job_id],
-            "job_skills": sorted(job_skills), "cand_skills": sorted(cand_skills),
-            "matched": matched, "missing": missing, "match_pct": match * 100,
-            "skill_match_pct": feats["skill_match_ratio"] * 100, "level": level, "weeks": weeks,
-            "weeks_by_skill": {s: cfg.SKILL_WEEKS[s] for s in missing}, "lang_prob": lang_prob,
-            "nlp": analysis, "strength": nlp.strength_score(analysis, lang_prob),
+            "job_id": job_id,
+            "job_title": self.job_titles[job_id],
+            "domain": self.job_domains[job_id],
+            "job_skills": sorted(job_skills),
+            "cand_skills": sorted(cand_skills),
+            "cand_soft_skills": sorted(cand_soft),
+            "job_soft_skills": sorted(job_soft),
+            "soft_overlap": soft_overlap,
+            "soft_match_pct": round(soft_match_pct, 1),
+            "matched": matched,
+            "missing": missing,
+            "transferable": transferable,
+            "transferable_match_pct": round(transferable_match_pct, 1),
+            "composite_compat": composite_compat,
+            "gap_explanations": gap_explanations,
+            "match_pct": match * 100,
+            "skill_match_pct": feats["skill_match_ratio"] * 100,
+            "level": level,
+            "weeks": weeks,
+            "weeks_by_skill": {s: cfg.SKILL_WEEKS.get(s, 5) for s in missing},
+            "lang_prob": lang_prob,
+            "nlp": analysis,
+            "metadata": metadata,
+            "strength": nlp.strength_score(analysis, lang_prob),
             "alternates": self.alternate_careers(clean, cand_skills, years),
             "coverage": self.domain_coverage(cand_skills),
-            "skill_levels": self.skill_levels(clean), "years": years, "resume_text": resume_text,
+            "categorized_candidate_skills": categorize_skills(cand_skills),
+            "skill_levels": self.skill_levels(clean),
+            "years": years,
+            "resume_text": resume_text,
             "feats": feats,
         }
-        log.info("Analyzed resume for '%s' | match=%.1f%% level=%s weeks=%.1f (%.2fs)",
-                 result["job_title"], result["match_pct"], level, weeks, time.time() - t0)
+        log.info("Analyzed resume for '%s' | match=%.1f%% level=%s weeks=%.1f compat=%.1f%% (%.2fs)",
+                 result["job_title"], result["match_pct"], level, weeks, composite_compat, time.time() - t0)
         return result
 
     def rank_jobs(self, resume_text, years, top_n=10, domain="All"):
+        self._require_valid_resume(resume_text)
+        years = extract_resume_metadata(resume_text)["extracted_years"]
         clean = clean_text(resume_text)
         cand = extract_skills(clean)
         cand_vec = self.tfidf.transform([clean])
@@ -184,35 +316,60 @@ class CareerEngine:
             feats["match_score"] = float(sims[idx])
             level, weeks = self.predict(feats)
             js = set(self.job_skills[idx])
+            matched_s = sorted(js & set(cand))
+            missing_s = sorted(js - set(cand))
+            transferable = find_transferable_credits(set(cand), set(missing_s))
             rows.append({
-                "job_id": idx, "title": self.job_titles[idx], "domain": self.job_domains[idx],
-                "fit_score": round(fit * 100, 1), "skill_match_pct": round(ratio * 100, 1),
-                "level": level, "weeks_to_ready": round(weeks, 1),
-                "matched": sorted(js & set(cand)), "missing": sorted(js - set(cand)),
+                "job_id": idx,
+                "title": self.job_titles[idx],
+                "domain": self.job_domains[idx],
+                "fit_score": round(fit * 100, 1),
+                "skill_match_pct": round(ratio * 100, 1),
+                "text_match_pct": round(float(sims[idx]) * 100, 1),
+                "level": level,
+                "weeks_to_ready": round(weeks, 1),
+                "matched": matched_s,
+                "missing": missing_s,
+                "transferable_count": len(transferable),
             })
         log.info("Ranked %d jobs (domain=%s)", len(rows), domain)
         return pd.DataFrame(rows)
 
     def report_text(self, result):
         lines = [
-            "CAREERPATH AI REPORT",
-            f"Target job: {result['job_title']}",
-            f"Match score: {result['match_pct']:.1f}%",
-            f"Skill match: {result['skill_match_pct']:.1f}%",
-            f"Readiness level: {result['level']}",
-            f"Estimated time to job ready: {result['weeks']:.1f} weeks",
-            f"Resume strength: {result['strength']}/100",
+            "============================================================",
+            "  CAREERPATH AI: CAREER TRAJECTORY & SKILL GAP REPORT",
+            "============================================================",
+            f"Target Role: {result['job_title']} ({result['domain']})",
+            f"Overall Compatibility Score: {result.get('composite_compat', result['match_pct']):.1f} / 100",
+            f"Direct Skill Match: {result['skill_match_pct']:.1f}%",
+            f"Transferable Skill Match: {result.get('transferable_match_pct', result['skill_match_pct']):.1f}%",
+            f"Textual Semantic Match: {result['match_pct']:.1f}%",
+            f"Assessed Career Readiness Level: {result['level']}",
+            f"Estimated Timeline to Ready: {result['weeks']:.1f} weeks (at 10 hours/week)",
+            f"Resume Content Strength Score: {result['strength']}/100",
             "",
-            "Matched skills: " + (", ".join(result["matched"]) or "None"),
-            "Missing skills: " + (", ".join(result["missing"]) or "None"),
-            "",
-            "Resume feedback:",
+            "----------------- SKILLS BREAKDOWN -----------------",
+            "Matched Core Skills: " + (", ".join(result["matched"]) or "None detected"),
+            "Missing Skills: " + (", ".join(result["missing"]) or "None"),
         ]
-        lines += ["- " + t for t in result["nlp"]["tips"]]
-        lines += ["", "Alternate careers:"]
+        if result.get("transferable"):
+            lines.append("")
+            lines.append("Transferable Skill Bridges:")
+            for t in result["transferable"][:4]:
+                lines.append(f"  * {t['source_skill']} -> {t['target_skill']} ({t['percentage']}% transferable bridge)")
+
+        lines += ["", "----------------- RESUME FEEDBACK -----------------"]
+        lines += [f"- {t}" for t in result["nlp"]["tips"]]
+        lines += ["", "----------------- ALTERNATE CAREER PATHS -----------------"]
         for a in result["alternates"]:
-            lines.append(f"- {a['domain']} (fit {a['fit']:.0f}%) | best job: {a['job']} | "
-                         f"level: {a['level']} | {a['weeks']:.1f} weeks")
+            lines.append(f"- {a['domain']} (Fit: {a['fit']:.0f}%) | Best Match: {a['job']} | Level: {a['level']} | Ready: {a['weeks']:.1f} weeks")
+
         ready = date.today() + timedelta(weeks=result["weeks"])
-        lines += ["", f"Estimated ready date at 10 hours per week: {ready.isoformat()}"]
+        lines += [
+            "",
+            f"Projected Readiness Date: {ready.strftime('%d %B %Y')}",
+            "Notice: Guidance generated for academic and career planning purposes.",
+            "============================================================"
+        ]
         return "\n".join(lines)

@@ -24,6 +24,40 @@ def test_analysis_ranges(result):
     assert result["weeks"] >= 0
 
 
+def test_engine_rejects_non_resume_before_scoring(engine):
+    unrelated = (
+        "Quarterly facilities report describing maintenance, energy usage, "
+        "invoices, planned repairs, and upcoming building projects."
+    )
+    with pytest.raises(ValueError, match="does not contain enough structured resume content"):
+        engine.analyze(unrelated, 0, 0)
+    with pytest.raises(ValueError, match="does not contain enough structured resume content"):
+        engine.screen(unrelated, 0, 0)
+
+
+def test_experience_argument_cannot_override_resume(engine):
+    screened = engine.screen(cfg.DEMO_RESUME, 15, 0)
+    assert screened["years"] == 1
+
+
+def test_missing_tensorflow_reports_clear_install_hint(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tensorflow":
+            raise ModuleNotFoundError("No module named 'tensorflow'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    from core import models
+
+    with pytest.raises(RuntimeError, match="TensorFlow is required"):
+        models._get_tf()
+
+
 def test_prerequisites_are_valid_and_ordered():
     for skill, pres in PREREQUISITES.items():
         assert skill in cfg.ALL_SKILLS and all(p in cfg.ALL_SKILLS for p in pres)
