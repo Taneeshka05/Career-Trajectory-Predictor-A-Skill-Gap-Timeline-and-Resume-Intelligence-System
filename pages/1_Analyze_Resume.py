@@ -108,9 +108,18 @@ if r:
 
         b1, b2, b3 = st.columns(3)
         if db.history_enabled():
+            doc_name = (
+                st.session_state.get("_last_uploaded_filename")
+                or st.session_state.get("resume_analyze_filename")
+                or f"Candidate Resume ({date.today().strftime('%b %d')})"
+            )
+            saved_id = st.session_state.get("last_saved_analysis_id")
             if b1.button("Save this analysis to History", width="stretch"):
-                aid = db.save_analysis(profile(), r, engine.plan_for_save(r))
-                st.success(f"Saved analysis #{aid}. Track progress on the History page.")
+                aid = db.save_analysis(profile(), r, engine.plan_for_save(r), filename=doc_name)
+                st.session_state["last_saved_analysis_id"] = aid
+                st.success(f"Saved analysis #{aid} ({doc_name}). Track progress on the History page.")
+            elif saved_id:
+                b1.caption(f"💾 Record #{saved_id} saved in History ({doc_name})")
         else:
             b1.caption("History saving disabled in demo mode.")
         b2.download_button("Download Summary Report (.txt)", engine.report_text(r), "careerpath_summary.txt", width="stretch")
