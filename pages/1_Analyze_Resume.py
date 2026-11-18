@@ -35,7 +35,20 @@ with right:
 if run:
     if valid_resume_or_dialog(text):
         with st.spinner("Analyzing text, parsing taxonomy, calculating transferable bridges & running ML models..."):
-            st.session_state["analysis"] = engine.analyze(text, years, job_id)
+            res = engine.analyze(text, years, job_id)
+            st.session_state["analysis"] = res
+            doc_name = (
+                st.session_state.get("_last_uploaded_filename")
+                or st.session_state.get("resume_analyze_filename")
+                or f"Candidate Resume ({date.today().strftime('%b %d')})"
+            )
+            if db.history_enabled():
+                try:
+                    aid = db.save_analysis(profile(), res, engine.plan_for_save(res), filename=doc_name)
+                    st.session_state["last_saved_analysis_id"] = aid
+                    st.toast(f"✅ Analysis recorded to History as Record #{aid} ({doc_name})")
+                except Exception:
+                    pass
 
 r = st.session_state.get("analysis")
 if r:
