@@ -1,2 +1,5 @@
 python -m pip install -r .\requirements.txt
 python -m streamlit run .\app.py
+
+$env:TF_CPP_MIN_LOG_LEVEL = '2'
+python -m streamlit run .\app.py

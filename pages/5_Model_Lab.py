@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -155,9 +156,15 @@ if mode == "Dynamic ML Training Pipeline (Upload or Bundled Data)":
                 for i, col_name in enumerate(feature_cols):
                     with input_cols[i % len(input_cols)]:
                         if np.issubdtype(df_loaded[col_name].dtype, np.number):
-                            default_val = float(df_loaded[col_name].median())
-                            min_val = float(df_loaded[col_name].min())
-                            max_val = float(df_loaded[col_name].max())
+                            med = df_loaded[col_name].median()
+                            col_min = df_loaded[col_name].min()
+                            col_max = df_loaded[col_name].max()
+                            default_val = float(med) if pd.notna(med) else 0.0
+                            min_val = float(col_min) if pd.notna(col_min) else default_val - 1.0
+                            max_val = float(col_max) if pd.notna(col_max) else default_val + 1.0
+                            if min_val >= max_val:
+                                min_val = default_val - 1.0
+                                max_val = default_val + 1.0
                             inputs[col_name] = st.number_input(col_name, value=default_val, min_value=min_val, max_value=max_val)
                         else:
                             unique_vals = df_loaded[col_name].dropna().unique().tolist()

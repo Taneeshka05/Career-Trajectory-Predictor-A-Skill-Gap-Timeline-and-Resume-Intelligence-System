@@ -1,3 +1,4 @@
+import os
 import hashlib
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ if str(ROOT) not in sys.path:
 from core import config as cfg
 from core import database as db
 from core.engine import CareerEngine
-from core.parser import extract_resume_metadata, is_valid_resume, parse_document
+from core.parser import extract_resume_metadata, is_valid_resume, validate_resume_text, parse_document
 
 CSS = """
 <style>

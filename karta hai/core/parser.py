@@ -93,11 +93,42 @@ DATE_RANGE_REGEX = re.compile(
     re.I,
 )
 
+BOOK_DISQUALIFIERS = [
+    (re.compile(r"\b(?:isbn(?:-1[03])?:?\s*[0-9x\- ]{10,18})\b", re.I), "ISBN publication identifier detected (Book/Monograph)"),
+    (re.compile(r"\b(?:all\s+rights\s+reserved|printed\s+in\s+[a-z]+|published\s+by\s+[a-z]+)\b", re.I), "Copyright publication or distribution notice detected"),
+    (re.compile(r"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+edition\b", re.I), "Book edition marker detected"),
+    (re.compile(r"\b(?:table\s+of\s+contents|contents\s+at\s+a\s+glance|chapter\s+\d+|chapter\s+[ivxlcdm]+)\b", re.I), "Book chapter structure or table of contents detected"),
+    (re.compile(r"\b(?:library\s+of\s+congress|cataloging-in-publication)\b", re.I), "Library cataloging metadata detected"),
+    (re.compile(r"\b(?:o'reilly\s+media|packt\s+publishing|manning\s+publications|springer\s+nature|addison-wesley|mcgraw-hill|wiley\s*&\s*sons)\b", re.I), "Book publishing house detected"),
+    (re.compile(r"\b(?:preface\b|foreword\b|about\s+the\s+author\b|about\s+the\s+technical\s+reviewer\b|dedication\b|epilogue\b)", re.I), "Book front/back matter detected"),
+    (re.compile(r"\b(?:invoice\s+(?:#|no|number)|bill\s+to:|amount\s+due|subtotal|balance\s+due)\b", re.I), "Invoice or financial document detected"),
+]
 
-def is_valid_resume(text: str) -> bool:
-    """Require resume structure and multiple independent career-history signals."""
-    if not text or len(text.split()) < 15:
-        return False
+
+def validate_resume_text(text: str) -> tuple[bool, str]:
+    """
+    Validates whether input text represents a legitimate resume/CV.
+    Returns (True, 'Valid Resume') or (False, rejection_reason).
+    """
+    if not text or len(text.strip()) == 0:
+        return False, "The document or text is completely empty."
+
+    for pattern, reason in BOOK_DISQUALIFIERS:
+        if pattern.search(text):
+            return False, f"Non-resume content detected: {reason} (Books, manuals, publications, and invoices are strictly rejected)."
+
+    words = text.split()
+    if len(words) < 15:
+        return False, "Document contains too few words (< 15 words) to be an informative resume."
+
+    if len(words) > 3500:
+        return False, (
+            f"Document length is {len(words):,} words, exceeding standard resume limits (~3,500 words). "
+            "Uploaded file appears to be a full book, academic thesis, or lengthy publication."
+        )
+
+    if "[PDF Metadata: Document has" in text:
+        return False, "Multi-page publication detected (> 8 pages). Resumes are typically 1-3 pages."
 
     sections = set()
     for line in text.splitlines():
@@ -127,15 +158,29 @@ def is_valid_resume(text: str) -> bool:
         sections & {"experience", "education", "skills", "projects", "internships"}
     )
     if has_resume_sections and professional_signals >= 1 and professional_signals + supporting_signals >= 2:
-        return True
+        return True, "Valid Resume"
     if has_contact and len(matched_skills) >= 3 and (
         {"education", "skills"} <= sections or {"projects", "skills"} <= sections
     ):
-        return True
+        return True, "Valid Resume"
+    if has_contact and len(matched_skills) >= 2 and (
+        "education" in sections or "projects" in sections or "skills" in sections
+    ):
+        return True, "Valid Resume"
+    if has_degree and has_experience and len(matched_skills) >= 2 and (has_contact or has_role):
+        return True, "Valid Resume"
+    if has_degree and has_experience and len(matched_skills) >= 2 and len(words) <= 1500:
+        return True, "Valid Resume"
 
-    # Allow concise narrative resumes without headings, but require several
-    # independent resume-specific signals rather than generic words like "CV".
-    return has_degree and has_experience and len(matched_skills) >= 2
+    return False, (
+        "Document lacks essential resume sections (Work Experience, Education, Skills, or Projects) "
+        "and candidate contact details."
+    )
+
+
+def is_valid_resume(text: str) -> bool:
+    """Require resume structure and multiple independent career-history signals."""
+    return validate_resume_text(text)[0]
 
 
 def _years_from_experience_dates(text: str) -> int:
@@ -197,6 +242,17 @@ def extract_text_from_pdf(file_bytes_or_stream) -> str:
     try:
         from pypdf import PdfReader
         reader = PdfReader(file_bytes_or_stream)
+        num_pages = len(reader.pages)
+        if num_pages > 8:
+            # Resumes rarely exceed 4-5 pages; limit parsing for multi-hundred page books/theses
+            log.warning("PDF has %d pages; exceeds resume length", num_pages)
+            text_parts = [f"[PDF Metadata: Document has {num_pages} pages - Exceeds standard resume length]"]
+            for i in range(min(num_pages, 8)):
+                txt = reader.pages[i].extract_text()
+                if txt:
+                    text_parts.append(txt)
+            return "\n".join(text_parts)
+
         text_parts = []
         for i, page in enumerate(reader.pages):
             txt = page.extract_text()

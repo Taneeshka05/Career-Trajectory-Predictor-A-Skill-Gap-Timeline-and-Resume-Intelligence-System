@@ -122,3 +122,28 @@ def test_resume_validation_accepts_fresher_resume_without_work_history():
         "Built an inventory application as an academic project."
     )
     assert is_valid_resume(fresher_resume)
+
+
+def test_resume_validation_rejects_books_and_publications():
+    book_text = (
+        "Designing for Behavior Change\n"
+        "SECOND EDITION\n"
+        "Applying Psychology and Behavioral Economics\n"
+        "Stephen Wendel\n\n"
+        "Designing for Behavior Change\n"
+        "by Stephen Wendel\n"
+        "Copyright 2020 Stephen Wendel. All rights reserved.\n"
+        "Printed in Canada.\n"
+        "Published by O'Reilly Media, Inc.\n"
+        "ISBN: 978-1-492-05603-4\n\n"
+        "Stephen Wendel has a Ph.D. and over 25 years of experience in behavioral economics.\n"
+        "He utilizes Python and SQL to analyze behavior."
+    )
+    assert not is_valid_resume(book_text)
+
+
+def test_resume_validation_detailed_reason():
+    from core.parser import validate_resume_text
+    is_valid, reason = validate_resume_text("ISBN: 978-1-492-05603-4 Second Edition All rights reserved")
+    assert not is_valid
+    assert "ISBN" in reason or "Non-resume" in reason
