@@ -186,6 +186,8 @@ def get_engine():
 def setup(title, icon):
     st.set_page_config(page_title=f"{title} | CareerPath AI", page_icon=icon, layout="wide")
     st.markdown(CSS, unsafe_allow_html=True)
+    # Enable history storage for local deployment by default
+    os.environ.setdefault(db.HISTORY_ENV, "1")
     db.init_db()
     with st.sidebar:
         st.markdown("""
@@ -197,13 +199,15 @@ def setup(title, icon):
         """, unsafe_allow_html=True)
         st.caption("Resume job matching, skill gap timeline and career trajectory prediction.")
         st.markdown("<a class='sidebar-home-link' href='./'>Home</a>", unsafe_allow_html=True)
-        if db.history_enabled():
-            name = st.text_input("Profile name", value=st.session_state.get("profile_name", "guest"),
-                                 key=f"profile_input_{title}")
-            st.session_state["profile_name"] = name.strip() or "guest"
-            st.caption("History is enabled for this private deployment.")
-        else:
-            st.caption("Public demo mode: resume analyses are not saved.")
+        name = st.text_input("Active Profile", value=st.session_state.get("profile_name", "guest"),
+                             key=f"profile_input_{title}")
+        st.session_state["profile_name"] = name.strip() or "guest"
+        try:
+            curr_stats = db.stats(st.session_state["profile_name"])
+            n_recs = curr_stats.get("count", 0)
+            st.caption(f"Logged in as **{st.session_state['profile_name']}** ({n_recs} saved {'analysis' if n_recs == 1 else 'analyses'})")
+        except Exception:
+            st.caption(f"Logged in as **{st.session_state['profile_name']}** (History active)")
     return get_engine()
 
 
@@ -221,10 +225,11 @@ def read_upload(file):
     return parse_document(file, file.name)
 
 
-@st.dialog("Invalid resume file")
+@st.dialog("❌ Invalid Document Detected")
 def _invalid_resume_dialog(message):
     st.error(message)
-    if st.button("Close", key="close_invalid_resume_dialog"):
+    st.info("💡 **Resolution:** Please remove this document and upload an authentic resume (.pdf, .docx, or .txt) containing candidate work experience, education history, and technical skills.")
+    if st.button("Acknowledge & Clear", key="close_invalid_resume_dialog", type="primary"):
         st.session_state.pop("_invalid_resume_dialog", None)
         st.rerun()
 
@@ -234,14 +239,19 @@ def show_invalid_resume_dialog(message):
 
 
 def valid_resume_or_dialog(text):
-    if is_valid_resume(text):
+    is_valid, reason = validate_resume_text(text)
+    if is_valid:
         return True
     for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
         st.session_state.pop(result_key, None)
-    show_invalid_resume_dialog(
-        "The supplied document does not appear to be a valid resume. "
-        "Please upload or enter a resume containing work or education history and relevant skills."
+    msg = (
+        f"❌ **Invalid Resume Document**\n\n"
+        f"{reason}\n\n"
+        "⚠️ **Action Required:** Please upload or enter a legitimate resume containing work or education history and relevant skills."
     )
+    show_invalid_resume_dialog(msg)
+    st.error(msg)
+    st.stop()
     return False
 
 
@@ -260,33 +270,70 @@ def resume_panel(key, height=260, default_text=""):
         text = read_upload(upload)
         for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
             st.session_state.pop(result_key, None)
-        if is_valid_resume(text):
+        is_valid, reason = validate_resume_text(text)
+        if is_valid:
             st.session_state[key] = text
+            st.session_state[f"{key}_filename"] = upload.name
+            st.session_state["_last_uploaded_filename"] = upload.name
             st.session_state.pop("_invalid_resume_dialog", None)
         else:
             st.session_state[key] = ""
+            st.session_state["resume_store"] = ""
+            st.session_state.pop(f"{key}_filename", None)
+            st.session_state.pop("_last_uploaded_filename", None)
             st.session_state["_invalid_resume_dialog"] = (
-                f"'{upload.name}' does not appear to be a readable resume. "
-                "Upload a resume containing work or education history and relevant skills."
+                f"❌ **Invalid Document Uploaded: '{upload.name}'**\n\n"
+                f"{reason}\n\n"
+                "⚠️ **This platform strictly accepts resumes only.** "
+                "Books, novels, multi-page publications, manuals, invoices, and generic reports cannot be processed. "
+                "Please upload a legitimate resume (.pdf, .docx, or .txt) containing candidate work history, education, and relevant technical skills."
             )
         st.session_state[marker_key] = marker
     elif upload is None:
         st.session_state.pop(marker_key, None)
+        st.session_state.pop(f"{key}_filename", None)
         if st.session_state.get(key) == cfg.DEMO_RESUME:
             st.session_state[key] = ""
+
+    # Check if there is an active rejection dialog from an invalid upload
+    if st.session_state.get("_invalid_resume_dialog"):
+        dialog_msg = st.session_state["_invalid_resume_dialog"]
+        show_invalid_resume_dialog(dialog_msg)
+        st.error(dialog_msg)
+        st.stop()
+
     text = st.text_area("Resume text", key=key, height=height)
     st.session_state["resume_store"] = text
-    if not text or not is_valid_resume(text):
+
+    if text and text.strip():
+        # Check if user typed or pasted an invalid document into the text area
+        if text.strip() != cfg.DEMO_RESUME:
+            is_valid, reason = validate_resume_text(text)
+            if not is_valid and len(text.strip().split()) >= 15:
+                msg = (
+                    f"❌ **Invalid Resume Content Detected**\n\n"
+                    f"{reason}\n\n"
+                    "⚠️ The entered text does not appear to be a legitimate resume. "
+                    "Please paste a valid resume containing candidate work/education history and technical skills."
+                )
+                show_invalid_resume_dialog(msg)
+                st.error(msg)
+                st.stop()
+    else:
         for result_key in ("analysis", "home_result", "ranked", "map", "improved"):
             st.session_state.pop(result_key, None)
         st.session_state.pop("home_result_is_demo", None)
-    if st.session_state.get("_invalid_resume_dialog"):
-        show_invalid_resume_dialog(st.session_state["_invalid_resume_dialog"])
+
     return text
 
 
 def resume_years(text):
+    if not text or not is_valid_resume(text):
+        st.caption("Experience: *Awaiting valid resume*")
+        return 0
     years = extract_resume_metadata(text)["extracted_years"]
     unit = "year" if years == 1 else "years"
+    st.caption(f"Experience extracted from resume: **{years} {unit}**")
+    return years
     st.caption(f"Experience extracted from resume: **{years} {unit}**")
     return years
