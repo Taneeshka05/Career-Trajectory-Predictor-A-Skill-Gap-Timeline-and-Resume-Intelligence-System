@@ -59,7 +59,18 @@ def home():
                 result = engine.analyze(resume_text, years, job_id)
             st.session_state["home_result"] = result
             st.session_state["analysis"] = result
-            st.session_state.pop("home_saved_analysis_id", None)
+            doc_name = (
+                st.session_state.get("_last_uploaded_filename")
+                or st.session_state.get("home_resume_filename")
+                or "Candidate Resume (Home)"
+            )
+            if db.history_enabled():
+                try:
+                    aid = db.save_analysis(profile(), result, engine.plan_for_save(result), filename=doc_name)
+                    st.session_state["home_saved_analysis_id"] = aid
+                    st.toast(f"✅ Analysis saved to History as #{aid} ({doc_name})")
+                except Exception:
+                    pass
 
     result = st.session_state.get("home_result")
     if result:
